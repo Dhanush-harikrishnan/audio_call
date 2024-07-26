@@ -1,53 +1,52 @@
-const socket = io();
-const username = prompt('Enter your name:');
-socket.emit('join-call', username);
+document.addEventListener('DOMContentLoaded', () => {
+  const muteUnmuteButton = document.getElementById('mute-unmute');
+  let isMuted = false;
+  let localStream;
+  const peerConnections = {};
+  const socket = io.connect();
 
-const localAudio = document.createElement('audio');
-localAudio.muted = true;
-document.body.appendChild(localAudio);
-
-let peerConnections = {};
-let isMuted = false;
-
-// Get user media for audio with enhanced settings
-navigator.mediaDevices.getUserMedia({
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true
+  // Function to get user media
+  async function getUserMedia() {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // Mute the local audio to prevent feedback
+      localStream.getAudioTracks()[0].enabled = false;
+      // Do something with the localStream, e.g., send it to the server
+      socket.emit('join-call', 'room-id', localStream);
+    } catch (error) {
+      console.error('Error accessing media devices.', error);
+    }
   }
-})
-.then(stream => {
-  localAudio.srcObject = stream;
-  localAudio.play().catch(error => console.error('Error playing local audio:', error));
 
-  // Toggle mute/unmute
-  function toggleMute() {
+  // Call the function to get user media
+  getUserMedia();
+
+  muteUnmuteButton.addEventListener('click', () => {
     isMuted = !isMuted;
-    localAudio.srcObject.getAudioTracks().forEach(track => track.enabled = !isMuted);
-    document.getElementById('mute-unmute').textContent = isMuted ? 'Unmute' : 'Mute';
-    socket.emit('mute-unmute', isMuted);
-  }
-
-  // Handle user list update
-  socket.on('update-user-list', (users) => {
-    const userList = document.getElementById('user-list');
-    userList.innerHTML = '';
-    for (let id in users) {
-      const user = users[id];
-      const userItem = document.createElement('div');
-      userItem.textContent = `${user.username} ${user.muted ? '(Muted)' : ''}`;
-      userList.appendChild(userItem);
-
-      if (!peerConnections[id] && id !== socket.id) {
-        createPeerConnection(id, stream);
-      }
+    if (isMuted) {
+      muteUnmuteButton.textContent = 'Unmute';
+      // Mute the audio
+      document.querySelectorAll('audio').forEach(audio => {
+        audio.muted = true;
+      });
+    } else {
+      muteUnmuteButton.textContent = 'Mute';
+      // Unmute the audio
+      document.querySelectorAll('audio').forEach(audio => {
+        audio.muted = false;
+      });
     }
   });
 
-  // Handle offer from other users
+  socket.on('new-peer', id => {
+    const peerConnection = createPeerConnection(id);
+    peerConnections[id] = peerConnection;
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+  });
+
   socket.on('offer', (id, description) => {
-    const peerConnection = createPeerConnection(id, stream);
+    const peerConnection = createPeerConnection(id);
+    peerConnections[id] = peerConnection;
     peerConnection.setRemoteDescription(description)
       .then(() => peerConnection.createAnswer())
       .then(sdp => peerConnection.setLocalDescription(sdp))
@@ -56,78 +55,58 @@ navigator.mediaDevices.getUserMedia({
       });
   });
 
-  // Handle answer from other users
   socket.on('answer', (id, description) => {
     peerConnections[id].setRemoteDescription(description);
   });
 
-  // Handle ICE candidates
   socket.on('ice-candidate', (id, candidate) => {
     peerConnections[id].addIceCandidate(new RTCIceCandidate(candidate));
   });
 
-  // Handle user disconnection
-  socket.on('user-disconnected', id => {
+  socket.on('peer-disconnected', id => {
     if (peerConnections[id]) {
       peerConnections[id].close();
       delete peerConnections[id];
+      const remoteAudio = document.getElementById(`remote-audio-${id}`);
+      if (remoteAudio) {
+        remoteAudio.remove();
+      }
     }
   });
 
-  // Handle mute/unmute from other users
-  socket.on('mute-unmute', (id, isMuted) => {
-    const remoteAudio = document.getElementById(`remote-audio-${id}`);
-    if (remoteAudio) {
-      remoteAudio.muted = isMuted;
-    }
-  });
+  function createPeerConnection(id) {
+    const peerConnection = new RTCPeerConnection();
 
-  // Event listeners
-  document.getElementById('mute-unmute').addEventListener('click', toggleMute);
-  document.getElementById('end-call').addEventListener('click', () => {
-    socket.emit('end-call');
-    window.location.reload();
-  });
+    peerConnection.ontrack = event => {
+      let remoteAudio = document.getElementById(`remote-audio-${id}`);
+      if (!remoteAudio) {
+        remoteAudio = document.createElement('audio');
+        remoteAudio.id = `remote-audio-${id}`;
+        document.body.appendChild(remoteAudio);
+      }
+      remoteAudio.srcObject = event.streams[0];
+      remoteAudio.play().then(() => {
+        console.log('Remote audio is playing');
+      }).catch(error => {
+        console.error('Error playing remote audio:', error);
+      });
+    };
 
-})
-.catch(error => {
-  console.error('Error accessing media devices:', error);
+    peerConnection.onicecandidate = event => {
+      if (event.candidate) {
+        socket.emit('ice-candidate', id, event.candidate);
+      }
+    };
+
+    peerConnection.createOffer()
+      .then(sdp => peerConnection.setLocalDescription(sdp))
+      .then(() => {
+        socket.emit('offer', id, peerConnection.localDescription);
+      })
+      .catch(error => {
+        console.error('Error creating offer:', error);
+      });
+
+    return peerConnection;
+  }
 });
-
-// Create peer connection
-function createPeerConnection(id, stream) {
-  const peerConnection = new RTCPeerConnection();
-  stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
-
-  peerConnection.ontrack = event => {
-    let remoteAudio = document.getElementById(`remote-audio-${id}`);
-    if (!remoteAudio) {
-      remoteAudio = document.createElement('audio');
-      remoteAudio.id = `remote-audio-${id}`;
-      document.body.appendChild(remoteAudio);
-    }
-    remoteAudio.srcObject = event.streams[0];
-    remoteAudio.play().catch(error => console.error('Error playing remote audio:', error));
-  };
-
-  peerConnection.onicecandidate = event => {
-    if (event.candidate) {
-      socket.emit('ice-candidate', id, event.candidate);
-    }
-  };
-
-  peerConnection.oniceconnectionstatechange = () => {
-    if (peerConnection.iceConnectionState === 'disconnected') {
-      console.warn(`Peer connection with ${id} disconnected.`);
-    }
-  };
-
-  peerConnection.createOffer()
-    .then(sdp => peerConnection.setLocalDescription(sdp))
-    .then(() => {
-      socket.emit('offer', id, peerConnection.localDescription);
-    });
-
-  peerConnections[id] = peerConnection;
-  return peerConnection;
-}

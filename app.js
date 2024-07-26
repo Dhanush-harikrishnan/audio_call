@@ -1,11 +1,11 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
 const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = new Server(server);
 
 app.set('view engine', 'ejs');
 app.use(express.static(path.join(__dirname, 'public')));
@@ -14,45 +14,54 @@ app.get('/', (req, res) => {
   res.render('index');
 });
 
-let users = {};
+app.get('/room', (req, res) => {
+  res.render('room', { roomID: req.query.roomID, username: req.query.username });
+});
+
+let rooms = {};
 
 io.on('connection', (socket) => {
-  socket.on('join-call', (username) => {
-    users[socket.id] = { username, muted: false };
-    io.emit('update-user-list', users);
-  });
-
-  socket.on('mute-unmute', (isMuted) => {
-    if (users[socket.id]) {
-      users[socket.id].muted = isMuted;
-      io.emit('update-user-list', users);
+  socket.on('join-room', ({ roomID, username }) => {
+    socket.join(roomID);
+    if (!rooms[roomID]) {
+      rooms[roomID] = {};
     }
-  });
+    rooms[roomID][socket.id] = { username, muted: false };
+    io.to(roomID).emit('update-user-list', rooms[roomID]);
 
-  socket.on('end-call', () => {
-    if (users[socket.id]) {
-      delete users[socket.id];
-      io.emit('update-user-list', users);
-    }
-  });
+    socket.on('mute-unmute', (isMuted) => {
+      if (rooms[roomID][socket.id]) {
+        rooms[roomID][socket.id].muted = isMuted;
+        io.to(roomID).emit('update-user-list', rooms[roomID]);
+      }
+    });
 
-  socket.on('disconnect', () => {
-    if (users[socket.id]) {
-      delete users[socket.id];
-      io.emit('update-user-list', users);
-    }
-  });
+    socket.on('end-call', () => {
+      if (rooms[roomID][socket.id]) {
+        delete rooms[roomID][socket.id];
+        io.to(roomID).emit('update-user-list', rooms[roomID]);
+      }
+      socket.leave(roomID);
+    });
 
-  socket.on('offer', (id, description) => {
-    socket.to(id).emit('offer', socket.id, description);
-  });
+    socket.on('disconnect', () => {
+      if (rooms[roomID] && rooms[roomID][socket.id]) {
+        delete rooms[roomID][socket.id];
+        io.to(roomID).emit('update-user-list', rooms[roomID]);
+      }
+    });
 
-  socket.on('answer', (id, description) => {
-    socket.to(id).emit('answer', socket.id, description);
-  });
+    socket.on('offer', (id, description) => {
+      socket.to(id).emit('offer', socket.id, description);
+    });
 
-  socket.on('ice-candidate', (id, candidate) => {
-    socket.to(id).emit('ice-candidate', socket.id, candidate);
+    socket.on('answer', (id, description) => {
+      socket.to(id).emit('answer', socket.id, description);
+    });
+
+    socket.on('ice-candidate', (id, candidate) => {
+      socket.to(id).emit('ice-candidate', socket.id, candidate);
+    });
   });
 });
 
