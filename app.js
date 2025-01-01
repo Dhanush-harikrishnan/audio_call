@@ -28,11 +28,13 @@ io.on('connection', (socket) => {
     }
     rooms[roomID][socket.id] = { username, muted: false };
     io.to(roomID).emit('update-user-list', rooms[roomID]);
+    socket.broadcast.to(roomID).emit('chat-message', { message: `${username} has joined the room`, username: 'System' });
 
     socket.on('mute-unmute', (isMuted) => {
       if (rooms[roomID][socket.id]) {
         rooms[roomID][socket.id].muted = isMuted;
         io.to(roomID).emit('update-user-list', rooms[roomID]);
+        io.to(roomID).emit('mute-unmute', socket.id, isMuted);
       }
     });
 
@@ -42,12 +44,15 @@ io.on('connection', (socket) => {
         io.to(roomID).emit('update-user-list', rooms[roomID]);
       }
       socket.leave(roomID);
+      socket.emit('redirect', '/');
     });
 
     socket.on('disconnect', () => {
       if (rooms[roomID] && rooms[roomID][socket.id]) {
+        const username = rooms[roomID][socket.id].username;
         delete rooms[roomID][socket.id];
         io.to(roomID).emit('update-user-list', rooms[roomID]);
+        socket.broadcast.to(roomID).emit('chat-message', { message: `${username} has left the room`, username: 'System' });
       }
     });
 
@@ -61,6 +66,10 @@ io.on('connection', (socket) => {
 
     socket.on('ice-candidate', (id, candidate) => {
       socket.to(id).emit('ice-candidate', socket.id, candidate);
+    });
+
+    socket.on('chat-message', ({ message, username }) => {
+      io.to(roomID).emit('chat-message', { message, username });
     });
   });
 });
