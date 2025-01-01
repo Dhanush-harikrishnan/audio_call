@@ -15,6 +15,9 @@
       flex-direction: column;
       align-items: center;
       padding: 20px;
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
     }
     button {
       padding: 12.5px 30px;
@@ -24,6 +27,10 @@
       color: #ffffff;
       font-weight: bold;
       transition: all 0.5s;
+      cursor: pointer;
+      font-size: 16px;
+      width: 100%;
+      max-width: 200px;
     }
     
     button:hover {
@@ -40,11 +47,15 @@
     }
     h1 {
       color: #f5f5f5;
+      text-align: center;
     }
     #controls {
       margin-bottom: 20px;
       display: flex;
       gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: 100%;
     }
     #mute-unmute, #end-call {
       padding: 10px 20px;
@@ -121,6 +132,7 @@
     }
     #chat-input {
       display: flex;
+      width: 100%;
     }
     #chat-input input {
       flex: 1;
@@ -139,12 +151,26 @@
     #chat-input button:hover {
       background-color: #0056b3;
     }
+    #video-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+      width: 100%;
+      max-width: 1000px;
+      margin-top: 20px;
+    }
+    video {
+      width: 100%;
+      border-radius: 5px;
+      background-color: black;
+    }
   </style>
 </head>
 <body style="background-color: black;"> 
   <h1>Room: <%= roomID %></h1>
   <div id="controls">
     <button id="mute-unmute">Mute</button>
+    <button id="toggle-video">Video Off</button>
     <button id="end-call">End Call</button>
   </div>
   <div id="user-list"></div>
@@ -155,6 +181,7 @@
       <button id="send-message">Send</button>
     </div>
   </div>
+  <div id="video-grid"></div>
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
   <script>
@@ -167,25 +194,41 @@
     localAudio.muted = true;
     document.body.appendChild(localAudio);
 
+    const localVideo = document.createElement('video');
+    localVideo.muted = true;
+    document.getElementById('video-grid').appendChild(localVideo);
+
     let peerConnections = {};
     let isMuted = false;
+    let isVideoOn = true;
 
     navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true
-      }
+      },
+      video: true
     })
     .then(stream => {
       localAudio.srcObject = stream;
       localAudio.play().catch(error => console.error('Error playing local audio:', error));
 
+      localVideo.srcObject = stream;
+      localVideo.play().catch(error => console.error('Error playing local video:', error));
+
       function toggleMute() {
         isMuted = !isMuted;
         localAudio.srcObject.getAudioTracks().forEach(track => track.enabled = !isMuted);
         document.getElementById('mute-unmute').textContent = isMuted ? 'Unmute' : 'Mute';
-        socket.emit('mute-unmute', isMuted);
+        socket.emit('mute-unmute', { id: socket.id, isMuted });
+      }
+
+      function toggleVideo() {
+        isVideoOn = !isVideoOn;
+        localVideo.srcObject.getVideoTracks().forEach(track => track.enabled = isVideoOn);
+        document.getElementById('toggle-video').textContent = isVideoOn ? 'Video Off' : 'Video On';
+        socket.emit('toggle-video', { id: socket.id, isVideoOn });
       }
 
       socket.on('update-user-list', (users) => {
@@ -237,7 +280,7 @@
         peerConnections[id].addIceCandidate(new RTCIceCandidate(candidate));
       });
 
-      socket.on('mute-unmute', (id, isMuted) => {
+      socket.on('mute-unmute', ({ id, isMuted }) => {
         const remoteAudio = document.getElementById(`remote-audio-${id}`);
         if (remoteAudio) {
           remoteAudio.muted = isMuted;
@@ -254,7 +297,15 @@
         }
       });
 
+      socket.on('toggle-video', ({ id, isVideoOn }) => {
+        const remoteVideo = document.getElementById(`remote-video-${id}`);
+        if (remoteVideo) {
+          remoteVideo.srcObject.getVideoTracks().forEach(track => track.enabled = isVideoOn);
+        }
+      });
+
       document.getElementById('mute-unmute').addEventListener('click', toggleMute);
+      document.getElementById('toggle-video').addEventListener('click', toggleVideo);
       document.getElementById('end-call').addEventListener('click', () => {
         socket.emit('end-call');
         window.location.href = '/';
@@ -305,6 +356,14 @@
         return colors[Math.abs(hash) % colors.length];
       }
 
+      socket.on('end-call', () => {
+        for (let id in peerConnections) {
+          peerConnections[id].close();
+          delete peerConnections[id];
+        }
+        window.location.href = '/';
+      });
+
     })
     .catch(error => {
       console.error('Error accessing media devices:', error);
@@ -323,6 +382,15 @@
         }
         remoteAudio.srcObject = event.streams[0];
         remoteAudio.play().catch(error => console.error('Error playing remote audio:', error));
+
+        let remoteVideo = document.getElementById(`remote-video-${id}`);
+        if (!remoteVideo) {
+          remoteVideo = document.createElement('video');
+          remoteVideo.id = `remote-video-${id}`;
+          document.getElementById('video-grid').appendChild(remoteVideo);
+        }
+        remoteVideo.srcObject = event.streams[0];
+        remoteVideo.play().catch(error => console.error('Error playing remote video:', error));
       };
 
       peerConnection.onicecandidate = event => {
